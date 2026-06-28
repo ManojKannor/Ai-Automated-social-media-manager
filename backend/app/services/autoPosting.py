@@ -1,157 +1,232 @@
-from fastapi import APIRouter, HTTPException, Depends
 import requests
 from sqlmodel import Session, select
-from app.database.database import get_session, engine
+from app.database.database import engine
 from app.database.models.post_queue import PostQueue
 from app.database.models.social_accounts import SocialAccounts
 import time
 
+
 def post_social(input_post):
-    # 1. Get the ID from the input object
     post_id = input_post.id
-    
-    # 2. Open a NEW Session for this specific transaction
+
     with Session(engine) as session:
-        # 3. CRITICAL FIX: Re-fetch the post so it belongs to THIS session
         post = session.get(PostQueue, post_id)
-        
+
         if not post:
-            print(f"❌ Post {post_id} not found in database.")
+            print(f"❌ Post {post_id} not found")
             return
 
-        # 4. Parse Platforms
-        raw_platforms = post.platforms or ""
-        platforms_list = [p.strip().lower() for p in raw_platforms.split(",") if p.strip()]
+        platforms = [p.strip().lower() for p in (post.platforms or "").split(",") if p.strip()]
+        print(f"🚀 Processing Post {post.id} | {platforms}")
 
-        print(f"DEBUG: Processing Post {post.id} | Type: {post.media_type} | Platforms: {platforms_list}")
-
-        responses = {}
         errors = []
-        
-        try:
-            user_id = post.user_id
-            media_url = post.media_url
-            media_type = post.media_type  
-            
-            # ==============================================================================
-            # 1. FACEBOOK
-            # ==============================================================================
-            if "facebook" in platforms_list:
-                print("--> Starting Facebook Post...")
-                account = session.exec(select(SocialAccounts).where(
-                    SocialAccounts.platform == 'facebook', 
-                    SocialAccounts.user_id == user_id
-                )).first()
-                
-                if not account:
-                    errors.append("Facebook account not linked")
+        responses = []
+
+        user_id = post.user_id
+        media_url = post.media_url
+        media_type = (post.media_type or "").lower()
+
+        # ================= FACEBOOK =================
+        if "facebook" in platforms:
+            account = session.exec(select(SocialAccounts).where(
+                SocialAccounts.platform == 'facebook',
+                SocialAccounts.user_id == user_id
+            )).first()
+
+            if account:
+                url = f"https://graph.facebook.com/v19.0/{account.platform_id}/photos" if media_type == "image" else f"https://graph.facebook.com/v19.0/{account.platform_id}/videos"
+
+                payload = {
+                    "access_token": account.access_token,
+                    "url": media_url if media_type == "image" else None,
+                    "file_url": media_url if media_type != "image" else None,
+                    "caption": post.content_facebook if media_type == "image" else None,
+                    "description": post.content_facebook if media_type != "image" else None,
+                }
+
+                res = requests.post(url, data={k: v for k, v in payload.items() if v})
+                data = res.json()
+
+                if "id" not in data:
+                    print("❌ FB Error:", data)
+                    errors.append(f"FB: {data}")
                 else:
-                    fb_page_id = account.platform_id
-                    access_token = account.access_token
-                    
-                    if media_type == "photo":
-                        fb_url = f"https://graph.facebook.com/v19.0/{fb_page_id}/photos"
-                        payload = {"caption": post.content_facebook, "url": media_url, "access_token": access_token}
-                    else: 
-                        fb_url = f"https://graph.facebook.com/v19.0/{fb_page_id}/videos"
-                        payload = {"description": post.content_facebook, "file_url": media_url, "access_token": access_token}
-                    
-                    r = requests.post(fb_url, data=payload)
-                    resp_data = r.json()
-                    responses["facebook"] = resp_data
-                    
-                    if r.status_code != 200 or "id" not in resp_data:
-                        errors.append(f"Facebook Error: {resp_data.get('error', {}).get('message')}")
-
-            # ==============================================================================
-            # 2. INSTAGRAM
-            # ==============================================================================
-            if "instagram" in platforms_list:
-                print("--> Starting Instagram Post...")
-                account = session.exec(select(SocialAccounts).where(
-                    SocialAccounts.platform == 'instagram', 
-                    SocialAccounts.user_id == user_id
-                )).first()
-                
-                if not account:
-                    errors.append("Instagram account not linked")
-                else:
-                    ig_user_id = account.platform_id
-                    access_token = account.access_token
-                    create_url = f"https://graph.facebook.com/v19.0/{ig_user_id}/media"
-                    
-                    if media_type == "photo":
-                        payload = {"image_url": media_url, "caption": post.content_instagram, "access_token": access_token}
-                    else:
-                        payload = {"media_type": "REELS", "video_url": media_url, "caption": post.content_instagram, "access_token": access_token}
-                    
-                    resp = requests.post(create_url, data=payload).json()
-
-                    if "id" in resp:
-                        creation_id = resp["id"]
-                        print(f"   IG Container Created: {creation_id}. Waiting...")
-                        
-                        is_ready = False
-                        for i in range(10): 
-                            time.sleep(5) 
-                            status_check = requests.get(f"https://graph.facebook.com/v19.0/{creation_id}?fields=status_code&access_token={access_token}").json()
-                            code = status_check.get("status_code")
-                            if code == 'FINISHED':
-                                is_ready = True
-                                break
-                            elif code == 'ERROR':
-                                errors.append(f"IG Processing Error: {status_check}")
-                                break
-                        
-                        if is_ready:
-                            pub_resp = requests.post(f"https://graph.facebook.com/v19.0/{ig_user_id}/media_publish", data={"creation_id": creation_id, "access_token": access_token}).json()
-                            responses["instagram"] = pub_resp
-                            if "id" not in pub_resp:
-                                errors.append(f"IG Publish Failed: {pub_resp}")
-                        elif "IG Processing Error" not in str(errors):
-                            errors.append("Instagram Timeout")
-                    else:
-                        errors.append(f"IG Container Failed: {resp}")
-
-            # ==============================================================================
-            # 3. LINKEDIN
-            # ==============================================================================
-            if "linkedin" in platforms_list:
-                print("--> Starting LinkedIn Post...")
-                account = session.exec(select(SocialAccounts).where(
-                    SocialAccounts.platform == 'linkedin', 
-                    SocialAccounts.user_id == user_id
-                )).first()
-                
-                if not account:
-                    errors.append("LinkedIn account not linked")
-                else:
-                    # ... (Your existing LinkedIn Logic here is fine) ...
-                    # For brevity, assume your LinkedIn logic is here
-                    pass 
-
-            # ==============================================================================
-            # FINAL SAVE - THIS NOW WORKS BECAUSE 'post' IS ATTACHED TO 'session'
-            # ==============================================================================
-            if not errors:
-                post.status = "completed"  # This modifies the object attached to THIS session
-                print("✅ SUCCESS: Post marked as completed.")
+                    responses.append("facebook success")
             else:
-                post.status = "failed"
-                print(f"❌ FAILURE: {errors}")
+                errors.append("FB not linked")
 
-            session.add(post)
-            session.commit() # This will effectively save to the DB
-            session.refresh(post)
+        # ================= INSTAGRAM =================
+        if "instagram" in platforms:
+            account = session.exec(select(SocialAccounts).where(
+                SocialAccounts.platform == 'instagram',
+                SocialAccounts.user_id == user_id
+            )).first()
 
-            return {
-                "status": post.status, 
-                "errors": errors, 
-                "details": responses
-            }
+            if account:
+                create_url = f"https://graph.facebook.com/v19.0/{account.platform_id}/media"
 
-        except Exception as e:
-            print(f"CRITICAL EXCEPTION: {e}")
-            session.rollback()
-            # If using inside a background task, just print error instead of raising HTTP exception
-            return {"status": "error", "msg": str(e)}
+                if media_type == "image":
+                    payload = {
+                        "image_url": media_url,
+                        "caption": post.content_instagram,
+                        "media_type": "IMAGE",
+                        "access_token": account.access_token
+                    }
+                else:
+                    payload = {
+                        "video_url": media_url,
+                        "media_type": "REELS",
+                        "caption": post.content_instagram,
+                        "access_token": account.access_token
+                    }
+
+                create = requests.post(create_url, data=payload).json()
+
+                if "id" in create:
+                    creation_id = create["id"]
+                    print(f"⏳ IG Container: {creation_id}")
+
+                    ready = False
+                    start = time.time()
+
+                    while time.time() - start < 120:
+                        status = requests.get(
+                            f"https://graph.facebook.com/v19.0/{creation_id}",
+                            params={"fields": "status_code", "access_token": account.access_token}
+                        ).json()
+
+                        if status.get("status_code") == "FINISHED":
+                            ready = True
+                            break
+                        elif status.get("status_code") == "ERROR":
+                            print("❌ IG Error:", status)
+                            errors.append(f"IG Error: {status}")
+                            break
+
+                        time.sleep(5)
+
+                    if ready:
+                        publish = requests.post(
+                            f"https://graph.facebook.com/v19.0/{account.platform_id}/media_publish",
+                            data={"creation_id": creation_id, "access_token": account.access_token}
+                        ).json()
+
+                        if "id" not in publish:
+                            print("❌ IG Publish Error:", publish)
+                            errors.append(f"IG Publish: {publish}")
+                        else:
+                            responses.append("instagram success")
+                    else:
+                        errors.append("IG timeout")
+                else:
+                    print("❌ IG Create Error:", create)
+                    errors.append(f"IG create: {create}")
+            else:
+                errors.append("IG not linked")
+
+        # ================= LINKEDIN (FIXED) =================
+        if "linkedin" in platforms:
+            account = session.exec(select(SocialAccounts).where(
+                SocialAccounts.platform == 'linkedin',
+                SocialAccounts.user_id == user_id
+            )).first()
+
+            if account:
+                try:
+                    headers = {
+                        "Authorization": f"Bearer {account.access_token}",
+                        "Content-Type": "application/json",
+                        "X-Restli-Protocol-Version": "2.0.0"
+                    }
+
+                    # ✅ FIX: correct author (no duplicate urn)
+                    author = account.platform_id
+                    print("🔗 Author:", author)
+
+                    recipe = "feedshare-image" if media_type == "image" else "feedshare-video"
+                    category = "IMAGE" if media_type == "image" else "VIDEO"
+
+                    # REGISTER UPLOAD
+                    reg_res = requests.post(
+                        "https://api.linkedin.com/v2/assets?action=registerUpload",
+                        headers=headers,
+                        json={
+                            "registerUploadRequest": {
+                                "recipes": [f"urn:li:digitalmediaRecipe:{recipe}"],
+                                "owner": author,
+                                "serviceRelationships": [{
+                                    "relationshipType": "OWNER",
+                                    "identifier": "urn:li:userGeneratedContent"
+                                }]
+                            }
+                        }
+                    )
+
+                    print("📡 LinkedIn Register:", reg_res.status_code, reg_res.text)
+
+                    if reg_res.status_code != 200:
+                        errors.append(f"LinkedIn register failed: {reg_res.text}")
+                        raise Exception("Register failed")
+
+                    reg = reg_res.json()
+
+                    upload_url = reg['value']['uploadMechanism']['com.linkedin.digitalmedia.uploading.MediaUploadHttpRequest']['uploadUrl']
+                    asset = reg['value']['asset']
+
+                    # FETCH MEDIA
+                    file_res = requests.get(media_url)
+                    if file_res.status_code != 200:
+                        errors.append("Media fetch failed")
+                        raise Exception("Media URL not accessible")
+
+                    # UPLOAD MEDIA
+                    upload_res = requests.put(upload_url, data=file_res.content)
+                    print("📤 Upload:", upload_res.status_code)
+
+                    if upload_res.status_code not in [200, 201]:
+                        errors.append(f"Upload failed: {upload_res.text}")
+                        raise Exception("Upload failed")
+
+                    # CREATE POST
+                    final = requests.post(
+                        "https://api.linkedin.com/v2/ugcPosts",
+                        headers=headers,
+                        json={
+                            "author": author,
+                            "lifecycleState": "PUBLISHED",
+                            "specificContent": {
+                                "com.linkedin.ugc.ShareContent": {
+                                    "shareCommentary": {"text": post.content_linkedin},
+                                    "shareMediaCategory": category,
+                                    "media": [{
+                                        "status": "READY",
+                                        "media": asset
+                                    }]
+                                }
+                            },
+                            "visibility": {
+                                "com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC"
+                            }
+                        }
+                    )
+
+                    print("📢 LinkedIn Post:", final.status_code, final.text)
+
+                    if final.status_code != 201:
+                        errors.append(f"LinkedIn failed: {final.text}")
+                    else:
+                        responses.append("linkedin success")
+
+                except Exception as e:
+                    print("❌ LinkedIn Exception:", str(e))
+                    errors.append(str(e))
+            else:
+                errors.append("LinkedIn not linked")
+
+        # ================= FINAL =================
+        post.status = "completed" if not errors else "failed"
+
+        session.add(post)
+        session.commit()
+
+        print("✅ DONE" if not errors else f"❌ Errors: {errors}")

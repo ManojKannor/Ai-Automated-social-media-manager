@@ -1,23 +1,27 @@
 from fastapi import APIRouter,Depends
 import urllib.parse # <--- ADD THIS IMPORT AT THE TOP
 import requests
+from pydantic import BaseModel
 from sqlmodel import SQLModel , select,Session
 from app.database.models.post_queue import PostQueue
 from app.database.database import get_session
 from app.database.models.social_accounts import SocialAccounts
 router = APIRouter()
+class User(BaseModel):
+    user_id : str
 
-@router.get("/get_all_posts")
-async def get_all_posts(session : Session = Depends(get_session)):
-    statement = select(PostQueue)
+
+@router.post("/get_all_posts")
+async def get_all_posts(data : User ,session : Session = Depends(get_session)):
+    statement = select(PostQueue).where(PostQueue.user_id == data.user_id)
     results = session.exec(statement).all()
 
     return results
 
-@router.get("/dashboard/stats")
-async def dashboard_stats(session : Session = Depends(get_session)):
-    statement = select(SocialAccounts)
-    accounts = session.exec(statement)
+@router.post("/dashboard/stats/")
+async def dashboard_stats(data : User, session : Session = Depends(get_session)):
+    statement = select(SocialAccounts).where(SocialAccounts.user_id == data.user_id)
+    accounts = session.exec(statement).all()
     social_stats = []
 
     for acc in accounts:

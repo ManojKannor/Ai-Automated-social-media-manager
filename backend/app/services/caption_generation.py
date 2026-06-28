@@ -27,7 +27,6 @@ class RegenerateCaption(BaseModel):
     keywords : str
 
 
-# The client gets the API key from the environment variable `GEMINI_API_KEY`.
 client = genai.Client(api_key= os.getenv("GEMINI_API_KEY"))
 def generateCaption(keyword):
     response = client.models.generate_content(
@@ -144,7 +143,7 @@ def generateCaption(request: captionRequest):
     response = client.models.generate_content(
         model="gemini-2.5-flash",
         contents=f"""
-Generate the following three things based on the given keywords:
+Generate the following three things based on the given keywords + add your side:
 and please follow below intruction strickly and also add each caption end of hashtags and tags
 1. An attractive Instagram caption (1–2 lines, with emojis, no long text).
 2. A Facebook post description (3–4 lines, friendly and engaging).

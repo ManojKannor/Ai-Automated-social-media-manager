@@ -78,7 +78,7 @@ def linkedin_callback(
     person_urn = f"urn:li:person:{user_data.get('sub')}"
 
     social = SocialAccounts(
-        user_id = "auth0|1",
+        user_id = "auth0|695289119005f1d55ceed960",
         gmail="kannormanoj025@gmail.com",
         platform="linkedin",
         access_token=linkedin_access_token,

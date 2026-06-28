@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useAuth0 } from "@auth0/auth0-react";
 import axios from "axios";
 import {
   BarChart,
@@ -35,7 +36,7 @@ export default function Dashboard() {
   const navigate = useNavigate();
   const [recentPosts, setRecentPosts] = useState([]);
   const [isLoading, setLoading] = useState(true);
-  
+  const {user} = useAuth0();
   // New State for the Quick AI Widget
   const [quickPrompt, setQuickPrompt] = useState("");
   const [generatedIdea, setGeneratedIdea] = useState("");
@@ -45,7 +46,9 @@ export default function Dashboard() {
   useEffect(() => {
     const fetchDashboardData = async () => {
       try {
-        const response = await axios.get("http://localhost:8000/get_all_posts");
+        const response = await axios.post("http://localhost:8000/get_all_posts",{
+          "user_id" : user.sub
+        });
         const allPosts = Array.isArray(response.data) ? response.data : [];
         
         const completed = allPosts.filter((p) => p.status === "published").length;
@@ -62,7 +65,9 @@ export default function Dashboard() {
         });
 
         try {
-          const statsReq = await axios.get("http://localhost:8000/dashboard/stats");
+          const statsReq = await axios.post("http://localhost:8000/dashboard/stats/" ,{
+            "user_id" : user.sub
+          });
           if (Array.isArray(statsReq.data)) {
             setSocialStats(statsReq.data);
           } else {

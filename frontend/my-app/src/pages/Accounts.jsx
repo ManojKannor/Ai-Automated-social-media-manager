@@ -9,7 +9,6 @@ import {
   AlertCircle, 
   Link2, 
   Trash2, 
-  ExternalLink 
 } from "lucide-react";
 
 import { useSearchParams } from "react-router-dom";
@@ -18,7 +17,8 @@ export default function Accounts() {
   const [accounts, setAccounts] = useState([]);
   const [isLoading, setIsLoading] = useState(true);
   const [searchParams] = useSearchParams();
-  const {user} = useAuth0();
+  const { user } = useAuth0();
+  
   // 1. Fetch current connection status from DB
   useEffect(() => {
     if (searchParams.get("status") === "success") {
@@ -26,20 +26,23 @@ export default function Accounts() {
       fetchConnectedAccounts(); // List refresh karein
       window.history.replaceState({}, document.title, window.location.pathname);
     }
-
   }, [searchParams]);
 
-  useEffect(()=> {
-    fetchConnectedAccounts()
-  },[])
+  useEffect(() => {
+    if (user) {
+        fetchConnectedAccounts();
+    }
+  }, [user]); // Changed: Added user dependency
 
   const fetchConnectedAccounts = async () => {
+    if (!user || !user.sub) return;
+
     try {
-      // Create this endpoint in your backend to return list of connected platforms
-      // Expected response: [{ platform: "facebook", username: "MyPage" }, ...]
-      const res = await axios.get(`http://127.0.0.1:8000/connected/accounts/auth0%7C1`); 
-      // utilizing your existing stats endpoint which returns connected accounts
-      console.log("connected accounts",res.data)
+      // Changed: Use actual user ID (encoded)
+      const encodedUserId = encodeURIComponent(user.sub);
+      
+      const res = await axios.get(`http://127.0.0.1:8000/connected/accounts/${encodedUserId}`); 
+      console.log("connected accounts", res.data);
       setAccounts(res.data || []);
       
     } catch (error) {
@@ -51,14 +54,26 @@ export default function Accounts() {
 
   // 2. Handle Connect (Redirect to Backend OAuth)
   const handleConnect = (platform) => {
+    if (!user) {
+        alert("Please wait for user data to load");
+        return;
+    }
+
+    // Changed: Encode user details to pass to backend
+    const encodedUserId = encodeURIComponent(user.sub);
+    const encodedEmail = encodeURIComponent(user.email);
+    
     let authUrl = "";
     
-    if (platform === "facebook" || platform === "instagram") {
-      // Redirects to your FastAPI endpoint that starts Facebook Login
-      // Ensure you have this endpoint in main.py
-      authUrl = "http://localhost:8000/connect/meta"; 
+    if (platform === "facebook") {
+      // Changed: Pass user_id and gmail
+      authUrl = `http://localhost:8000/connect/meta?user_id=${encodedUserId}&gmail=${encodedEmail}`; 
+    } else if (platform === "instagram") {
+      // Changed: Pass user_id and gmail to find linked account
+      authUrl = `http://localhost:8000/connect/instagram?user_id=${encodedUserId}&gmail=${encodedEmail}`;
     } else if (platform === "linkedin") {
-      authUrl = "http://localhost:8000/connect/linkedin";
+       // Changed: Pass user_id and gmail
+      authUrl = `http://localhost:8000/connect/linkedin?user_id=${encodedUserId}&gmail=${encodedEmail}`;
     }
 
     if (authUrl) {
@@ -71,8 +86,12 @@ export default function Accounts() {
   const handleDisconnect = async (platform) => {
     if(!window.confirm(`Are you sure you want to disconnect ${platform}?`)) return;
 
+    if (!user) return;
+
     try {
-      let response = await axios.delete(`http://localhost:8000/disconnect/${encodeURIComponent("auth0|1")}/${platform}`);
+      // Changed: Use actual encoded user ID
+      const encodedUserId = encodeURIComponent(user.sub);
+      let response = await axios.delete(`http://localhost:8000/disconnect/${encodedUserId}/${platform}`);
 
       console.log(response.data)
       // Refresh list after deletion
@@ -124,7 +143,7 @@ export default function Accounts() {
           description="Required: Your Instagram must be linked to a Facebook Page."
           icon={<Instagram className="w-8 h-8 text-pink-600" />}
           connectedData={getAccountStatus("instagram")}
-          onConnect={() => handleConnect("facebook")} // Instagram connects via Facebook Login
+          onConnect={() => handleConnect("instagram")} // Changed: Now calls handleConnect("instagram") correctly
           onDisconnect={() => handleDisconnect("instagram")}
           color="border-pink-500"
         />

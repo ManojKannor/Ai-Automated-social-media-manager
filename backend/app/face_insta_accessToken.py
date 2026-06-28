@@ -1,19 +1,17 @@
 import os
+import json # Changed: Added json
+import urllib.parse
 from dotenv import load_dotenv
-from fastapi import APIRouter,FastAPI, HTTPException, Query, Depends
+from fastapi import APIRouter, FastAPI, HTTPException, Query, Depends
 from fastapi.responses import RedirectResponse
-import requests, urllib.parse
-from pydantic import BaseModel
+import requests
 from app.database.database import get_session
 from app.database.models.social_accounts import SocialAccounts
-from sqlmodel import Session , select
-from app.database.routers.social_accounts import router as social_accounts_router
+from sqlmodel import Session, select
+
 load_dotenv()
 router = APIRouter()
 
-
-app = FastAPI()
-app.include_router(social_accounts_router)
 # -------------------------------------------------------
 # META (Facebook + Instagram) APP CREDENTIALS
 # -------------------------------------------------------
@@ -31,18 +29,25 @@ SCOPES = [
     "business_management"
 ]
 
-
 # -------------------------------------------------------
 # 1️⃣ CONNECT META (FACEBOOK + INSTAGRAM) — LOGIN
 # -------------------------------------------------------
 
 @router.get("/connect/meta")
-def connect_meta():
+def connect_meta(
+    user_id: str = Query(..., description="User ID from Auth0"), # Changed: Added user_id param
+    gmail: str = Query(..., description="User Email")            # Changed: Added gmail param
+):
+    # Changed: Pack user data into state parameter
+    state_data = json.dumps({"user_id": user_id, "gmail": gmail})
+    encoded_state = urllib.parse.quote(state_data)
+
     auth_url = (
         "https://www.facebook.com/v19.0/dialog/oauth?"
         f"client_id={APP_ID}"
         f"&redirect_uri={urllib.parse.quote(REDIRECT_URI)}"
         f"&scope={','.join(SCOPES)}"
+        f"&state={encoded_state}" # Changed: Added state to URL
     )
     return RedirectResponse(auth_url)
 
@@ -50,12 +55,26 @@ def connect_meta():
 # 2️⃣ CALLBACK → GET USER TOKEN + PAGES
 # -------------------------------------------------------
 @router.get("/meta/callback")
-def meta_callback(code: str = None, error: str = None, session: Session = Depends(get_session)):
+def meta_callback(
+    code: str = None, 
+    error: str = None, 
+    state: str = None, # Changed: Added state param
+    session: Session = Depends(get_session)
+):
 
     if error:
         raise HTTPException(status_code=400, detail=f"OAuth Error: {error}")
     if not code:
         raise HTTPException(status_code=400, detail="Authorization code missing")
+
+    # Changed: Extract user_id and gmail from state
+    try:
+        decoded_state = urllib.parse.unquote(state)
+        user_data = json.loads(decoded_state)
+        actual_user_id = user_data["user_id"]
+        actual_gmail = user_data["gmail"]
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid state parameter")
 
     # Step 1: Get short lived token (required to fetch pages)
     token_url = "https://graph.facebook.com/v19.0/oauth/access_token"
@@ -67,6 +86,9 @@ def meta_callback(code: str = None, error: str = None, session: Session = Depend
     }
 
     short_res = requests.get(token_url, params=params).json()
+    if "error" in short_res:
+         raise HTTPException(status_code=400, detail=str(short_res))
+         
     short_user_token = short_res["access_token"]
 
     # Step 2: Get pages using short user token
@@ -74,7 +96,6 @@ def meta_callback(code: str = None, error: str = None, session: Session = Depend
     pages_res = requests.get(pages_url, params={"access_token": short_user_token}).json()
 
     pages = pages_res.get("data", [])
-    saved_pages = []
 
     for page in pages:
         page_id = page["id"]
@@ -90,25 +111,30 @@ def meta_callback(code: str = None, error: str = None, session: Session = Depend
         }
 
         long_page_res = requests.get(page_exchange_url, params=page_exchange_params).json()
-        long_page_token = long_page_res["access_token"]
+        long_page_token = long_page_res.get("access_token", short_page_token)
 
-        # Save the connected Page
-        social = SocialAccounts(
-            user_id="auth0|1",
-            gmail="kannormanoj025@gmail.com",
-            platform="facebook",
-            access_token=long_page_token,
-            platform_id=page_id,
-            username=page["name"]
-                   # PAGE ACCESS TOKEN
-        )
-        session.add(social)
-        session.commit()
-        saved_pages.append({
-            "page_id": page_id,
-            "page_name": page["name"],
-            "page_access_token": long_page_token
-        })
+        # Check if account exists to update it, or create new
+        existing_account = session.exec(select(SocialAccounts).where(
+            SocialAccounts.user_id == actual_user_id,
+            SocialAccounts.platform_id == page_id
+        )).first()
+
+        if existing_account:
+            existing_account.access_token = long_page_token
+            existing_account.username = page["name"]
+            existing_account.gmail = actual_gmail
+            session.add(existing_account)
+        else:
+            # Save the connected Page
+            social = SocialAccounts(
+                user_id=actual_user_id,      # Changed: Use actual user_id
+                gmail=actual_gmail,          # Changed: Use actual gmail
+                platform="facebook",
+                access_token=long_page_token,
+                platform_id=page_id,
+                username=page["name"]
+            )
+            session.add(social)
 
     session.commit()
 
@@ -118,22 +144,27 @@ def meta_callback(code: str = None, error: str = None, session: Session = Depend
 # 4️⃣ GET INSTAGRAM BUSINESS ACCOUNT ID
 # -------------------------------------------------------
 @router.get("/connect/instagram")
-def instagram_account(session: Session = Depends(get_session)):
+def instagram_account(
+    user_id: str = Query(..., description="User ID"), # Changed: Added user_id param
+    gmail: str = Query(..., description="User Email"), # Changed: Added gmail param
+    session: Session = Depends(get_session)
+):
     
+    # Changed: Find Facebook account for THIS specific user
     fb = session.exec(
         select(SocialAccounts).where(
-            SocialAccounts.platform == "facebook"
+            SocialAccounts.platform == "facebook",
+            SocialAccounts.user_id == user_id
         )
     ).first()
 
     if not fb:
-        raise HTTPException(status_code=404, detail="Facebook page record not found")
+        raise HTTPException(status_code=404, detail="Facebook page not found. Please connect Facebook first.")
 
     page_access_token = fb.access_token
-    user = fb.username
     page_id = fb.platform_id
 
-    # 1. Graph API URL with Nested Fields (Ek hi call me ID, Username, Name)
+    # 1. Graph API URL with Nested Fields
     url = f"https://graph.facebook.com/v19.0/{page_id}"
     params = {
         "fields": "instagram_business_account{id,username,name}", 
@@ -149,18 +180,32 @@ def instagram_account(session: Session = Depends(get_session)):
     if not ig_data:
         return {"error": "No Instagram account linked to this Page"}
 
-    # 3. Database Entry
-    social = SocialAccounts(
-        user_id="auth0|1",
-        gmail="kannormanoj025@gmail.com",
-        platform="instagram",
-        access_token=page_access_token,  # Ye token save karna zaruri hai automation ke liye
-        platform_id=ig_data.get("id"),
-        username=user 
-    )
+    # Changed: Update or Create logic with actual user_id
+    ig_id = ig_data.get("id")
+    ig_username = ig_data.get("username")
 
-    session.add(social)
+    existing_ig = session.exec(select(SocialAccounts).where(
+        SocialAccounts.user_id == user_id,
+        SocialAccounts.platform_id == ig_id
+    )).first()
+
+    if existing_ig:
+        existing_ig.access_token = page_access_token
+        existing_ig.username = ig_username
+        existing_ig.gmail = gmail
+        session.add(existing_ig)
+    else:
+        # Database Entry
+        social = SocialAccounts(
+            user_id=user_id,         # Changed: Use actual user_id
+            gmail=gmail,             # Changed: Use actual gmail
+            platform="instagram",
+            access_token=page_access_token, 
+            platform_id=ig_id,
+            username=ig_username 
+        )
+        session.add(social)
+
     session.commit()
     
-    # Return both DB ID and IG Data
     return RedirectResponse(url="http://localhost:5173/accounts?status=success")

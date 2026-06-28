@@ -6,6 +6,7 @@ import {
   Save, Calendar, Heart, MessageCircle, 
   Share2, ThumbsUp, MoreHorizontal  
 } from "lucide-react";
+import { useAuth0 } from "@auth0/auth0-react";
 
 // --- DUMMY DATA (Fallback) ---
 const DUMMY_POSTS = [
@@ -25,7 +26,7 @@ export default function AdminDashboard() {
   // --- UI STATE ---
   const [posts, setPosts] = useState(DUMMY_POSTS); 
   const [keywords, setKeywords] = useState("");
-  
+  const {user} = useAuth0();
   // Preview Panel State
   const [selectedPost, setSelectedPost] = useState(null);
   const [activeTab, setActiveTab] = useState("instagram"); 
@@ -45,7 +46,9 @@ export default function AdminDashboard() {
   useEffect(() => {
     const handlePendingPosts = async() => {
       try {
-        const response = await axios.get("http://localhost:8000/get_pending_posts");
+        const response = await axios.post("http://localhost:8000/get_pending_posts",{
+            "user_id" : user.sub
+        });
         if(response.data && Array.isArray(response.data)) {
             setPosts(response.data);
         }
@@ -76,7 +79,7 @@ export default function AdminDashboard() {
       closePreview();
     } catch (error) {
       console.error("Approval error", error);
-      alert("Failed to approve post.");
+      alert("First Schedule the Post");
     }
   }
 
