@@ -4,6 +4,7 @@ sqlmodel
 python-dotenv
 google-generativeai==0.8.5
 genai==2.1.0
+pymysql
 psycopg2-binary
 python-multipart
 requests
