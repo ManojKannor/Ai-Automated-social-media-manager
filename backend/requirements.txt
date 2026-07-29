@@ -2,11 +2,10 @@ fastapi
 uvicorn
 sqlmodel
 python-dotenv
-google-generativeai
-genai
+google-generativeai==0.8.5
+genai==1.2.0
 psycopg2-binary
 python-multipart
 requests
 aiofiles
-google-generativeai
-pyjwt
+PyJWT
