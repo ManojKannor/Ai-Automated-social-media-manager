@@ -10,7 +10,7 @@ from app.services.create_post import router as create_post_router
 from app.services.dashboard import router as dashboard
 from app.services.connect_accounts import router as connectAccounts
 from app.services.scheduledPost import router as schedulePostsRouter
- app = FastAPI()
+app = FastAPI()
 admin_router = APIRouter()
 app.add_middleware(
     CORSMiddleware,
